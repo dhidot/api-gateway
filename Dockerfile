@@ -15,6 +15,7 @@ RUN --mount=type=cache,target=/root/.m2 \
     && cp target/api-gateway-*.jar /build/app.jar
 
 FROM eclipse-temurin:21-jre-noble AS runtime
+LABEL org.opencontainers.image.title="CareerTrack API Gateway"
 WORKDIR /app
 
 RUN groupadd --gid 10001 app \
