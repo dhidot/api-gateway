@@ -13,7 +13,7 @@ permissions:
 
 concurrency:
   group: gateway-image-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   test:
@@ -36,7 +36,7 @@ jobs:
 
   publish:
     needs: test
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
 
@@ -64,7 +64,9 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/dhidot/api-gateway:sha-${{ github.sha }}
+          tags: |
+            ghcr.io/dhidot/api-gateway:sha-${{ github.sha }}
+            ghcr.io/dhidot/api-gateway:production
           labels: |
             org.opencontainers.image.source=https://github.com/dhidot/api-gateway
             org.opencontainers.image.revision=${{ github.sha }}
