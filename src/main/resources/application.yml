@@ -12,6 +12,55 @@ spring:
             response-timeout: 10s
 
           routes:
+            # Login rate limiting
+            - id: auth-login
+              order: -10
+              uri: ${AUTH_SERVICE_URL:http://127.0.0.1:8081}
+              predicates:
+                - Path=/api/auth/login
+                - Method=POST
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    key-resolver: "#{@authPathKeyResolver}"
+                    bucket4j-rate-limiter.capacity: ${AUTH_LOGIN_RATE_CAPACITY:60}
+                    bucket4j-rate-limiter.refillTokens: ${AUTH_LOGIN_REFILL_TOKENS:60}
+                    bucket4j-rate-limiter.refillPeriod: 1m
+                    bucket4j-rate-limiter.requestedTokens: 1
+
+            # Register rate limiting
+            - id: auth-register
+              order: -9
+              uri: ${AUTH_SERVICE_URL:http://127.0.0.1:8081}
+              predicates:
+                - Path=/api/auth/register
+                - Method=POST
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    key-resolver: "#{@authPathKeyResolver}"
+                    bucket4j-rate-limiter.capacity: 30
+                    bucket4j-rate-limiter.refillTokens: 30
+                    bucket4j-rate-limiter.refillPeriod: 1m
+                    bucket4j-rate-limiter.requestedTokens: 1
+
+            # Refresh token rate limiting
+            - id: auth-refresh
+              order: -8
+              uri: ${AUTH_SERVICE_URL:http://127.0.0.1:8081}
+              predicates:
+                - Path=/api/auth/refresh
+                - Method=POST
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    key-resolver: "#{@authPathKeyResolver}"
+                    bucket4j-rate-limiter.capacity: 120
+                    bucket4j-rate-limiter.refillTokens: 120
+                    bucket4j-rate-limiter.refillPeriod: 1m
+                    bucket4j-rate-limiter.requestedTokens: 1
+
+            # Existing fallback route
             - id: auth-service
               uri: ${AUTH_SERVICE_URL:http://127.0.0.1:8081}
               predicates:
