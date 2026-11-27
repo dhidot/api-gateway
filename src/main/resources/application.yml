@@ -68,6 +68,13 @@ spring:
               predicates:
                 - Path=/api/auth/**
 
+            # Career service (P5). Access token verified by the gateway
+            # first (SecurityConfig, chain 1), then again by the service.
+            - id: career-service
+              uri: ${CAREER_SERVICE_URL:http://127.0.0.1:8083}
+              predicates:
+                - Path=/api/career/**
+
 server:
   port: ${GATEWAY_PORT:8080}
 
@@ -79,6 +86,19 @@ careertrack:
     bff-key: ${GATEWAY_BFF_KEY:}
     rate-limit:
       max-buckets: ${GATEWAY_RATE_LIMIT_MAX_BUCKETS:50000}
+
+  # ADR 0001, stage E: verification of access tokens on /api/career/**.
+  access-token:
+    jwk-set-uri: ${AUTH_JWKS_URI:http://127.0.0.1:8081/.well-known/jwks.json}
+    issuer: careertrack-auth
+    audience: careertrack-api
+
+  # Auth's revocation snapshot (logout / logout-all), polled every 5 s.
+  # Empty key disables polling (logged as a warning at startup).
+  revocations:
+    url: ${AUTH_REVOCATIONS_URL:http://127.0.0.1:8081/internal/revocations}
+    internal-api-key: ${REVOCATIONS_INTERNAL_API_KEY:}
+    poll-interval: ${REVOCATIONS_POLL_INTERVAL:5s}
 
 management:
   endpoints:
