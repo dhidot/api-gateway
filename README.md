@@ -1,50 +1,76 @@
-# CareerTrack API Gateway — Sprint 1 Foundation
+# CareerTrack API Gateway
 
-## Scope
-A minimal standalone Spring Cloud Gateway Server WebFlux application. Only forwards `/api/auth/**` to the existing Auth Service **without changing the path**.
+Spring Cloud Gateway (WebFlux) in front of the CareerTrack Auth Service. It forwards `/api/auth/**` unchanged, applies per-client rate limits, and adds a correlation ID. Identity, token checks and roles stay in Auth Service.
 
-- Java 21, Spring Boot 4.0.7, Spring Cloud 2025.1.3 (Gateway 5.0.3), Maven.
-- Default gateway port: `8080` (`GATEWAY_PORT`).
-- Default auth-service upstream: `http://127.0.0.1:8081` (`AUTH_SERVICE_URL`).
-- No JWT verification at the gateway yet. Auth Service must still enforce its own security.
-- No PostgreSQL, Flyway, Redis, or domain state in the gateway.
-- No implicit `/api/admin/**` or `/.well-known/jwks.json` exposure; review those routes separately.
+- Java 21, Spring Boot 4.0.7, Spring Cloud 2025.1.3 (Gateway 5.0.3), Maven
+- No database. No JWT verification at the gateway yet.
+- Production path: Browser → Next.js BFF (Vercel) → Caddy (EC2, TLS) → Gateway `:8080` → Auth `:8081`
+
+## Routes
+
+| Route | Path | Rate limit (per client, per minute) |
+|---|---|---|
+| `auth-login` | `POST /api/auth/login` | `AUTH_LOGIN_RATE_CAPACITY`, default 10 |
+| `auth-register` | `POST /api/auth/register` | `AUTH_REGISTER_RATE_CAPACITY`, default 5 |
+| `auth-refresh` | `POST /api/auth/refresh` | `AUTH_REFRESH_RATE_CAPACITY`, default 30 |
+| `auth-service` | `/api/auth/**` (everything else) | none |
+
+Over the limit the gateway returns `429`. Other namespaces are denied by default; `/actuator/health` and `/actuator/info` are open for probes.
+
+## How a "client" is identified
+
+Rate-limit buckets are keyed by **path + client address** (`ClientAddressFilter`, `RateLimitConfig`):
+
+1. If the request carries `X-CareerTrack-BFF-Key` equal to `GATEWAY_BFF_KEY`, the IP in `X-CareerTrack-Client-IP` is used. The Next.js BFF sends both, because every browser request reaches the gateway from Vercel's shared IPs.
+2. Otherwise the last `X-Forwarded-For` hop (written by Caddy) is used, or the socket address when there is none. Earlier hops are client-controlled and ignored.
+3. Only IP literals are accepted (no DNS lookups). IPv6 is grouped per `/64`.
+
+Both headers are removed before the request is forwarded, so the key never reaches Auth Service and a forged client IP is never passed upstream.
+
+## Configuration
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `GATEWAY_PORT` | `8080` | Listen port |
+| `AUTH_SERVICE_URL` | `http://127.0.0.1:8081` | Upstream (Docker: `http://auth:8081`) |
+| `GATEWAY_BFF_KEY` | empty (disabled) | Shared secret with the BFF; at least 32 characters or startup fails |
+| `AUTH_*_RATE_CAPACITY` / `AUTH_*_REFILL_TOKENS` | see Routes | Per-client limits |
+| `GATEWAY_RATE_LIMIT_MAX_BUCKETS` | `50000` | In-memory buckets kept; an evicted bucket starts full again |
+
+See `.env.example`. Generate the key with `openssl rand -base64 48` and set the **same value** as `GATEWAY_BFF_KEY` in the gateway's environment on EC2 and in Vercel (server-only, never `NEXT_PUBLIC_*`).
+
+Buckets live in memory, so limits reset when the container restarts and are not shared between replicas (the deployment runs a single instance).
 
 ## Run locally
 
-Ensure Auth Service is already running on port 8081 (or override `AUTH_SERVICE_URL`).
+Auth Service must be running on `8081` (or set `AUTH_SERVICE_URL`).
 
-Linux/macOS:
 ```bash
-export GATEWAY_PORT=8080
 export AUTH_SERVICE_URL=http://127.0.0.1:8081
-mvn spring-boot:run
+./mvnw spring-boot:run
 ```
 
-PowerShell:
-```powershell
-$env:GATEWAY_PORT = '8080'
-$env:AUTH_SERVICE_URL = 'http://127.0.0.1:8081'
-mvn spring-boot:run
-```
+Smoke check:
 
-## Smoke check
 ```bash
-curl -i http://localhost:8080/actuator/health
-curl -i http://localhost:8080/api/auth/me
+curl -i http://localhost:8080/actuator/health   # 200
+curl -i http://localhost:8080/api/auth/me       # 401 from Auth Service, not from the gateway
 ```
 
-Expected: health 200; unauthenticated `/api/auth/me` should be denied by Auth Service (normally 401) rather than by the gateway. If Auth Service is down, the gateway cannot return the normal auth response.
+## Tests
 
-Run `mvn clean test` to exercise the context bootstrap test. Integration tests for actual HTTP proxying, error status preservation, authorization pass-through, and security will be added in the next iteration; **this starter has not been built or tested in this execution environment**.
+```bash
+./mvnw test
+```
 
-## Important compatibility note
-`auth-service.zip` uploaded on 2026-10-09 contains migration history through V7, while a later technical handover describes V11–V13 and additional endpoints. Reconcile with the latest checked-out Auth Service controller and tests before pinning integration contracts. The simple `/api/auth/**` route intentionally does not impose request/response DTO assumptions.
+Covers routing and status/header pass-through, upstream-down behaviour, rate limiting per client (separate buckets, forged headers, IPv6 `/64`, `X-Forwarded-For` trust, header stripping) and IP parsing.
 
-## Deferred scope
-- JWT validation with Auth Service JWKS (RS256) and issuer/audience/type checks, plus a deliberate revocation strategy.
-- Dedicated CMS route and strict role enforcement.
-- Request correlation with header trust boundary and safe logging.
-- Reactive exception handling and 502/503/504 mapping for gateway-origin errors.
-- Rate limits, tested gradually (especially login/refresh).
-- Next.js BFF login/refresh/cookie integration and full routing/security tests.
+## CI/CD
+
+`.github/workflows/gateway-image.yml`: tests on pull requests; on push to `main` (or **Run workflow** on `main`) it also publishes a `linux/amd64` image to GHCR tagged with the commit SHA and `production`. The EC2 host polls the `production` tag with a systemd timer and rolls back if health checks fail.
+
+## Not done yet
+
+- JWT validation at the gateway (needs the cross-service identity contract first)
+- Consistent 502/503/504 mapping when Auth is down (currently 500)
+- Routes for the planned Application Service
