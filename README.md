@@ -1,9 +1,9 @@
 # CareerTrack API Gateway
 
-Spring Cloud Gateway (WebFlux) in front of the CareerTrack Auth Service. It forwards `/api/auth/**` unchanged, applies per-client rate limits, and adds a correlation ID. Identity, token checks and roles stay in Auth Service.
+Spring Cloud Gateway (WebFlux) in front of the CareerTrack services. It forwards `/api/auth/**` unchanged to Auth Service, **verifies access tokens and the revocation list for `/api/career/**`** before forwarding to career-service, applies per-client rate limits, and adds a correlation ID.
 
 - Java 21, Spring Boot 4.0.7, Spring Cloud 2025.1.3 (Gateway 5.0.3), Maven
-- No database. No JWT verification at the gateway yet.
+- No database. JWT verification only on protected routes (`/api/career/**`).
 - Production path: Browser → Next.js BFF (Vercel) → Caddy (EC2, TLS) → Gateway `:8080` → Auth `:8081`
 
 ## Routes
@@ -14,6 +14,7 @@ Spring Cloud Gateway (WebFlux) in front of the CareerTrack Auth Service. It forw
 | `auth-register` | `POST /api/auth/register` | `AUTH_REGISTER_RATE_CAPACITY`, default 5 |
 | `auth-refresh` | `POST /api/auth/refresh` | `AUTH_REFRESH_RATE_CAPACITY`, default 30 |
 | `auth-service` | `/api/auth/**` (everything else) | none |
+| `career-service` | `/api/career/**` | none (access token required, see below) |
 
 Over the limit the gateway returns `429`. Other namespaces are denied by default; `/actuator/health` and `/actuator/info` are open for probes.
 
@@ -28,6 +29,22 @@ When Auth Service cannot be used, the gateway answers itself with a small JSON b
 | Connection dropped or invalid response | `502` |
 
 Responses that Auth Service returns itself, including its own `500`/`503`, are passed through unchanged. Internal host names and ports are never included in the body. See `UpstreamErrorHandler`.
+
+## Protected routes: `/api/career/**` (ADR 0001, stage E)
+
+A separate security filter chain verifies the access token **before** the request is forwarded:
+
+| Check | Detail |
+|---|---|
+| Signature | RS256 only, keys from Auth's JWKS (`AUTH_JWKS_URI`), refreshed on unknown `kid`; HMAC and `alg: none` rejected |
+| Claims | `iss=careertrack-auth`, `aud` contains `careertrack-api`, `type=ACCESS`, `sub` is a UUID, `exp` (30 s skew) |
+| Revocations | Rejected if its `sid` was logged out, or if `iat` is before the user's logout-all cut-off |
+
+The revocation list is polled from Auth (`GET /internal/revocations`, header `X-Internal-Api-Key`) every 5 s and kept in memory (`RevocationPoller`, `RevocationList`). If a poll fails the last snapshot stays in use. Without `REVOCATIONS_INTERNAL_API_KEY` polling is disabled and a warning is logged at startup.
+
+`/api/auth/**` is in the **other** chain and is never token-checked by the gateway: legacy HMAC tokens must keep reaching Auth during the transition, and Auth decides itself.
+
+**career-service must only be reachable through the gateway.** It verifies signatures and claims on its own, but the revocation list is enforced here.
 
 ## How a "client" is identified
 
@@ -48,6 +65,11 @@ Both headers are removed before the request is forwarded, so the key never reach
 | `GATEWAY_BFF_KEY` | empty (disabled) | Shared secret with the BFF; at least 32 characters or startup fails |
 | `AUTH_*_RATE_CAPACITY` / `AUTH_*_REFILL_TOKENS` | see Routes | Per-client limits |
 | `GATEWAY_RATE_LIMIT_MAX_BUCKETS` | `50000` | In-memory buckets kept; an evicted bucket starts full again |
+| `CAREER_SERVICE_URL` | `http://127.0.0.1:8083` | Upstream for `/api/career/**` (Docker: `http://career:8083`) |
+| `AUTH_JWKS_URI` | `http://127.0.0.1:8081/.well-known/jwks.json` | Auth's public keys (Docker: `http://auth:8081/...`) |
+| `AUTH_REVOCATIONS_URL` | `http://127.0.0.1:8081/internal/revocations` | Auth's revocation snapshot (Docker: `http://auth:8081/...`) |
+| `REVOCATIONS_INTERNAL_API_KEY` | empty (polling disabled) | Same value as on Auth Service, at least 32 characters |
+| `REVOCATIONS_POLL_INTERVAL` | `5s` | How often the snapshot is refreshed |
 
 See `.env.example`. Generate the key with `openssl rand -base64 48` and set the **same value** as `GATEWAY_BFF_KEY` in the gateway's environment on EC2 and in Vercel (server-only, never `NEXT_PUBLIC_*`).
 
@@ -75,7 +97,7 @@ curl -i http://localhost:8080/api/auth/me       # 401 from Auth Service, not fro
 ./mvnw test
 ```
 
-Covers routing and status/header pass-through, upstream failures (503/504/502 and pass-through of upstream errors), rate limiting per client (separate buckets, forged headers, IPv6 `/64`, `X-Forwarded-For` trust, header stripping) and IP parsing.
+Covers routing and status/header pass-through, protected career routes (valid/invalid tokens, logout and logout-all via the revocation list, Auth routes unaffected), upstream failures (503/504/502 and pass-through of upstream errors), rate limiting per client (separate buckets, forged headers, IPv6 `/64`, `X-Forwarded-For` trust, header stripping) and IP parsing.
 
 ## CI/CD
 
@@ -83,5 +105,4 @@ Covers routing and status/header pass-through, upstream failures (503/504/502 an
 
 ## Not done yet
 
-- JWT validation at the gateway (needs the cross-service identity contract first)
 - Routes for the planned Application Service

@@ -156,7 +156,7 @@ class AuthRoutingIntegrationTest {
     }
 
     @Test
-    void shouldRejectCareerRouteBeforeConfigured() {
+    void shouldRequireATokenForCareerRoutes() {
         client.get()
                 .uri("/api/career/applications")
                 .exchange()
