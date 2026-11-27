@@ -38,7 +38,7 @@ class AuthUnavailableIntegrationTest {
     }
 
     @Test
-    void shouldHandleAuthServiceUnavailable() {
+    void shouldReturn503WhenAuthServiceCannotBeReached() {
         WebTestClient.bindToServer()
                 .baseUrl("http://127.0.0.1:" + gatewayPort)
                 .responseTimeout(Duration.ofSeconds(15))
@@ -46,8 +46,34 @@ class AuthUnavailableIntegrationTest {
                 .get()
                 .uri("/api/auth/me")
                 .exchange()
-                .expectStatus().is5xxServerError()
-                .expectHeader().exists("X-Correlation-ID");
+                .expectStatus().isEqualTo(503)
+                .expectHeader().exists("X-Correlation-ID")
+                .expectHeader().valueEquals("Retry-After", "5")
+                .expectHeader().valueEquals("Cache-Control", "no-store")
+                .expectHeader().contentType("application/json")
+                .expectBody()
+                .jsonPath("$.code").isEqualTo("503")
+                .jsonPath("$.message").isEqualTo(
+                        "Upstream service is unavailable. Please try again shortly.")
+                // Internal address must not leak to clients.
+                .consumeWith(result -> {
+                    String body = new String(result.getResponseBodyContent());
+                    if (body.contains("127.0.0.1") || body.contains(String.valueOf(unavailablePort))) {
+                        throw new AssertionError("body leaks upstream address: " + body);
+                    }
+                });
+    }
+
+    @Test
+    void rateLimitedRoutesAlsoReturn503() {
+        WebTestClient.bindToServer()
+                .baseUrl("http://127.0.0.1:" + gatewayPort)
+                .responseTimeout(Duration.ofSeconds(15))
+                .build()
+                .post()
+                .uri("/api/auth/login")
+                .exchange()
+                .expectStatus().isEqualTo(503);
     }
 
     private static int findUnusedPort() {

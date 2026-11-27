@@ -17,6 +17,18 @@ Spring Cloud Gateway (WebFlux) in front of the CareerTrack Auth Service. It forw
 
 Over the limit the gateway returns `429`. Other namespaces are denied by default; `/actuator/health` and `/actuator/info` are open for probes.
 
+## Upstream errors
+
+When Auth Service cannot be used, the gateway answers itself with a small JSON body (`{"code":"503","message":"..."}`, `Cache-Control: no-store`, plus `X-Correlation-ID`):
+
+| Situation | Status |
+|---|---|
+| Cannot connect (refused, DNS failure, connect timeout) | `503` + `Retry-After: 5` |
+| Connected, no response within the response timeout (10 s) | `504` |
+| Connection dropped or invalid response | `502` |
+
+Responses that Auth Service returns itself, including its own `500`/`503`, are passed through unchanged. Internal host names and ports are never included in the body. See `UpstreamErrorHandler`.
+
 ## How a "client" is identified
 
 Rate-limit buckets are keyed by **path + client address** (`ClientAddressFilter`, `RateLimitConfig`):
@@ -63,7 +75,7 @@ curl -i http://localhost:8080/api/auth/me       # 401 from Auth Service, not fro
 ./mvnw test
 ```
 
-Covers routing and status/header pass-through, upstream-down behaviour, rate limiting per client (separate buckets, forged headers, IPv6 `/64`, `X-Forwarded-For` trust, header stripping) and IP parsing.
+Covers routing and status/header pass-through, upstream failures (503/504/502 and pass-through of upstream errors), rate limiting per client (separate buckets, forged headers, IPv6 `/64`, `X-Forwarded-For` trust, header stripping) and IP parsing.
 
 ## CI/CD
 
@@ -72,5 +84,4 @@ Covers routing and status/header pass-through, upstream-down behaviour, rate lim
 ## Not done yet
 
 - JWT validation at the gateway (needs the cross-service identity contract first)
-- Consistent 502/503/504 mapping when Auth is down (currently 500)
 - Routes for the planned Application Service
